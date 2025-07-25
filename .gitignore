@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+.Python
+
+# VSCode
+.vscode/
+.idea/
+
+# pytest
+.pytest_cache/
+
+# Lambda ZIP
+lambda.zip
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+
+# Mac
+.DS_Store
