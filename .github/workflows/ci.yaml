@@ -27,6 +27,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd lambda
+        cd lambda
         pip install -r requirements.txt
 
     - name: Run tests
