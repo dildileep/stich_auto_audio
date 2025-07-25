@@ -29,8 +29,13 @@ jobs:
         cd lambda
         pip install -r requirements.txt
 
+    # - name: Run tests
+      # run: |
+        # cd lambda
+        # pytest
+        # PYTHONPATH=. pytest
+        
     - name: Run tests
       run: |
-        cd lambda
-        pytest
-        PYTHONPATH=. pytest
+        export PYTHONPATH=$PYTHONPATH:$(pwd)/lambda
+        pytest lambda/tests
