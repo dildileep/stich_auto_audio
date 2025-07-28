@@ -1,3 +1,4 @@
 pytest
 gTTS
 pydub
+boto3
