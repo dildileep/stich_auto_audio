@@ -8,8 +8,9 @@ import hashlib
 import tempfile
 import re
 from collections import namedtuple
+from io import BytesIO
 
-logging.basicConfig()
+# Set up logging
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
@@ -50,13 +51,16 @@ class S3Repo:
                 yield FileInfo(self.bucket, name, key, get_hash(audio))
 
     def read(self, key):
-        return self.s3.get_object(Bucket=self.bucket, Key=key)['Body']
+        # Return BytesIO instead of raw StreamingBody
+        response = self.s3.get_object(Bucket=self.bucket, Key=key)
+        return BytesIO(response['Body'].read())
 
     def write(self, audio):
-        with tempfile.NamedTemporaryFile(suffix='.wav') as tmp:
-            audio.export(tmp.name, format='wav')
-            with open(tmp.name, 'rb') as f:
-                self.s3.upload_fileobj(f, Bucket=self.out_bucket, Key=self.out_key)
+        buffer = BytesIO()
+        audio.export(buffer, format='wav')
+        buffer.seek(0)
+        self.s3.upload_fileobj(buffer, Bucket=self.out_bucket, Key=self.out_key)
+        log.info(f"Uploaded stitched audio to s3://{self.out_bucket}/{self.out_key}")
 
     def generate_missing(self, word):
         mp3_path = f'/tmp/{word}.mp3'
@@ -94,33 +98,62 @@ def main(message, repo):
 
     segments = []
     for word in clean_msg.split():
-        found = False
-        for f in repo.files():
-            if f.name == word:
-                segments.append(StitchFile(clean_msg.find(word), clean_msg.find(word)+len(word), f))
-                found = True
-                break
-        if not found:
+        match = next((f for f in repo.files() if f.name == word), None)
+        if match:
+            segments.append(StitchFile(clean_msg.find(word), clean_msg.find(word) + len(word), match))
+        else:
             log.info(f"Generating missing word: {word}")
-            f = repo.generate_missing(word)
-            segments.append(StitchFile(clean_msg.find(word), clean_msg.find(word)+len(word), f))
+            match = repo.generate_missing(word)
+            segments.append(StitchFile(clean_msg.find(word), clean_msg.find(word) + len(word), match))
 
     if not segments:
         log.warning("No audio segments found.")
         return False
 
+    # Stitch audio segments
     segments.sort(key=lambda s: s.start)
-    audio = sum([AudioSegment.from_file(repo.read(f.info.key)) for f in segments])
+    audio = None
+    for s in segments:
+        seg_audio = AudioSegment.from_file(repo.read(s.info.key), format='wav')
+        audio = seg_audio if audio is None else audio + seg_audio
+
     repo.write(audio)
     return True
 
 
 def lambda_handler(event, context):
-    body = json.loads(event['body'])
-    opts = LambdaOptions(body['message'], body['audios'], body['output'])
-    repo = S3Repo(opts.audios, opts.output)
-    success = main(opts.message, repo)
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"success": success})
-    }
+    log.info(f"Received event: {json.dumps(event)}")
+
+    try:
+        body = json.loads(event['body'])
+        message = body.get("message")
+        audios = body.get("audios")
+        output = body.get("output")
+    except Exception as e:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Invalid JSON format or missing keys", "details": str(e)})
+        }
+
+    if not message or not audios or not output:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Missing one or more required fields: 'message', 'audios', 'output'"})
+        }
+
+    try:
+        opts = LambdaOptions(message, audios, output)
+        repo = S3Repo(opts.audios, opts.output)
+        success = main(opts.message, repo)
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"success": success})
+        }
+
+    except Exception as e:
+        log.exception("Unhandled exception:")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }

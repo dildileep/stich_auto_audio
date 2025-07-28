@@ -12,7 +12,9 @@ resource "aws_iam_role" "lambda_exec_role" {
     Version = "2012-10-17",
     Statement = [{
       Effect = "Allow",
-      Principal = { Service = "lambda.amazonaws.com" },
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      },
       Action = "sts:AssumeRole"
     }]
   })
@@ -38,7 +40,9 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow",
         Action = [
-          "logs:*"
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
         ],
         Resource = "*"
       }
@@ -46,11 +50,12 @@ resource "aws_iam_role_policy" "lambda_policy" {
   })
 }
 
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "../lambda"
-  output_path = "../lambda.zip"
-}
+# Optional if you want to ZIP dynamically from local dir
+# data "archive_file" "lambda_zip" {
+#   type        = "zip"
+#   source_dir  = "../lambda"
+#   output_path = "../lambda.zip"
+# }
 
 resource "aws_lambda_function" "audio_stitch" {
   function_name = "audio_stitcher_lambda"
@@ -58,20 +63,18 @@ resource "aws_lambda_function" "audio_stitch" {
   handler       = "app.lambda_handler"
   runtime       = "python3.10"
   timeout       = 30
-  filename      = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  filename      = "../lambda.zip"  # OR use data.archive_file if enabled
+  source_code_hash = filebase64sha256("../lambda.zip")
+
   environment {
     variables = {
       LOG_LEVEL = "INFO"
     }
   }
-}
 
-resource "aws_lambda_permission" "apigw" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.audio_stitch.function_name
-  principal     = "apigateway.amazonaws.com"
+  # Uncomment below if using FFmpeg Layer
+  # layers = [aws_lambda_layer_version.ffmpeg_layer.arn]
+  # depends_on = [aws_lambda_layer_version.ffmpeg_layer]
 }
 
 resource "aws_apigatewayv2_api" "api" {
@@ -80,10 +83,10 @@ resource "aws_apigatewayv2_api" "api" {
 }
 
 resource "aws_apigatewayv2_integration" "lambda_integration" {
-  api_id             = aws_apigatewayv2_api.api.id
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.audio_stitch.invoke_arn
-  integration_method = "POST"
+  api_id                = aws_apigatewayv2_api.api.id
+  integration_type      = "AWS_PROXY"
+  integration_uri       = aws_lambda_function.audio_stitch.invoke_arn
+  integration_method    = "POST"
   payload_format_version = "2.0"
 }
 
@@ -98,6 +101,23 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 }
+
+resource "aws_lambda_permission" "apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.audio_stitch.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"  # <- Important fix
+}
+
+# Optional: FFmpeg Layer
+# resource "aws_lambda_layer_version" "ffmpeg_layer" {
+#   filename            = "../ffmpeg-layer.zip"
+#   layer_name          = "ffmpeg"
+#   compatible_runtimes = ["python3.10"]
+#   source_code_hash    = filebase64sha256("../ffmpeg-layer.zip")
+#   description         = "FFmpeg static binary layer for Python Lambda"
+# }
 
 output "invoke_url" {
   value = "${aws_apigatewayv2_api.api.api_endpoint}/stitch"
